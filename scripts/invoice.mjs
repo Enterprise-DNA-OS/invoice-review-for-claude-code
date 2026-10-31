@@ -1,88 +1,764 @@
 #!/usr/bin/env node
-import fs from 'node:fs';import path from 'node:path';import crypto from 'node:crypto';import {pathToFileURL} from 'node:url';
-import {getDb,REPO_ROOT} from './lib/db.mjs';import {parseCsv,pick} from './lib/csv.mjs';import {page,table,record,writeOut} from './lib/render.mjs';
-export const reads={
- suppliers:'select code,name,tax_number,verified_ref from suppliers order by code',
- orders:'select * from order_balance order by code',
- receipts:'select r.code,p.code purchase_order,r.net_cents,r.received_on,r.evidence_ref,r.actor from receipts r join purchase_orders p on p.id=r.po_id order by r.code',
- invoices:'select * from invoice_register order by due_on,code',
- 'review-queue':'select code,supplier,invoice_number,currency,gross_cents,owner,status,exception_count from review_week order by due_on,code',
- attention:"select code,supplier,owner,due_on,overdue_days,exception_count from review_week where overdue_days>0 or exception_count>0 order by overdue_days desc,code",
- exceptions:'select code,owner,rule,finding from invoice_exceptions order by code,rule',
- 'receipt-gaps':'select code,supplier,currency,ordered_cents,received_cents,invoiced_cents from order_balance where invoiced_cents>received_cents order by code',
- duplicates:"select code,owner,finding from invoice_exceptions where rule='DUPLICATE' order by code",
- compliance:"select code,rule,finding from invoice_exceptions where rule in ('NZ_GST_NUMBER','NZ_BUYER','SOURCE','DESCRIPTION','TOTALS','TAX_SCOPE') order by code,rule",
- 'handoff-ready':"select code,supplier,currency,gross_cents,reviewed_by from invoice_register r where status='ready' and not exists(select 1 from invoice_exceptions e where e.id=r.id) order by code",
- imports:'select source,file_hash,invoice_count,actor,created_at from import_batches order by created_at'
+import fs from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
+import { pathToFileURL } from "node:url";
+import { getDb, REPO_ROOT } from "./lib/db.mjs";
+import { parseCsv, pick } from "./lib/csv.mjs";
+import { page, table, record, writeOut } from "./lib/render.mjs";
+export const reads = {
+  suppliers:
+    "select code,name,tax_number,verified_ref from suppliers order by code",
+  orders: "select * from order_balance order by code",
+  receipts:
+    "select r.code,p.code purchase_order,r.net_cents,r.received_on,r.evidence_ref,r.actor from receipts r join purchase_orders p on p.id=r.po_id order by r.code",
+  invoices: "select * from invoice_register order by due_on,code",
+  "review-queue":
+    "select code,supplier,invoice_number,currency,gross_cents,owner,status,exception_count from review_week order by due_on,code",
+  attention:
+    "select code,supplier,owner,due_on,greatest(overdue_days,0) overdue_days,exception_count from review_week where overdue_days>0 or exception_count>0 order by overdue_days desc,code",
+  exceptions:
+    "select code,owner,rule,finding from invoice_exceptions order by code,rule",
+  "receipt-gaps":
+    "select code,supplier,currency,ordered_cents,received_cents,invoiced_cents from order_balance where invoiced_cents>received_cents order by code",
+  duplicates:
+    "select code,owner,finding from invoice_exceptions where rule='DUPLICATE' order by code",
+  compliance:
+    "select code,rule,finding from invoice_exceptions where rule in ('NZ_GST_NUMBER','NZ_BUYER','SOURCE','DESCRIPTION','TOTALS','TAX_SCOPE') order by code,rule",
+  "handoff-ready":
+    "select code,supplier,currency,gross_cents,reviewed_by from invoice_register r where status='ready' and not exists(select 1 from invoice_exceptions e where e.id=r.id) order by code",
+  imports:
+    "select source,file_hash,invoice_count,actor,created_at from import_batches order by created_at",
 };
-export const insightQueries=[
- ['Which overdue invoices have missing receipt evidence?',"select distinct w.code,w.supplier,w.owner,w.overdue_days from review_week w join invoice_exceptions e on e.id=w.id where w.overdue_days>0 and e.rule='RECEIPT' order by w.code"],
- ['Which supplier invoice numbers appear more than once?',reads.duplicates],
- ['Which owners have the most exceptions?',"select owner,count(*) exception_count,count(distinct id) invoice_count from invoice_exceptions group by owner order by exception_count desc,owner"],
- ['Which orders have more invoices than received goods?',reads['receipt-gaps']],
- ['Which invoices exceed the total authorised order?',"select code,owner,finding from invoice_exceptions where rule='PO_LIMIT' order by code"],
- ['Which records lack their original invoice reference?',"select code,owner from invoice_exceptions where rule='SOURCE' order by code"],
- ['Which NZ taxable supply records need more evidence?',"select code,rule,finding from invoice_exceptions where rule in ('NZ_GST_NUMBER','NZ_BUYER') order by code,rule"],
- ['Which invoices disagree with their line amounts?',"select code,owner from invoice_exceptions where rule='LINES' order by code"],
- ['Which suppliers have the longest overdue invoices?',"select supplier,max(overdue_days) oldest_days,count(*) invoice_count from review_week where overdue_days>0 group by supplier order by oldest_days desc,supplier"],
- ['Which reviewed invoices are still clear for handoff?',reads['handoff-ready']]
+export const insightQueries = [
+  [
+    "Which overdue invoices have missing receipt evidence?",
+    "select distinct w.code,w.supplier,w.owner,w.overdue_days from review_week w join invoice_exceptions e on e.id=w.id where w.overdue_days>0 and e.rule='RECEIPT' order by w.code",
+  ],
+  ["Which supplier invoice numbers appear more than once?", reads.duplicates],
+  [
+    "Which owners have the most exceptions?",
+    "select owner,count(*) exception_count,count(distinct id) invoice_count from invoice_exceptions group by owner order by exception_count desc,owner",
+  ],
+  [
+    "Which orders have more invoices than received goods?",
+    reads["receipt-gaps"],
+  ],
+  [
+    "Which invoices exceed the total authorised order?",
+    "select code,owner,finding from invoice_exceptions where rule='PO_LIMIT' order by code",
+  ],
+  [
+    "Which records lack their original invoice reference?",
+    "select code,owner from invoice_exceptions where rule='SOURCE' order by code",
+  ],
+  [
+    "Which NZ taxable supply records need more evidence?",
+    "select code,rule,finding from invoice_exceptions where rule in ('NZ_GST_NUMBER','NZ_BUYER') order by code,rule",
+  ],
+  [
+    "Which invoices disagree with their line amounts?",
+    "select code,owner from invoice_exceptions where rule='LINES' order by code",
+  ],
+  [
+    "Which suppliers have the longest overdue invoices?",
+    "select supplier,max(overdue_days) oldest_days,count(*) invoice_count from review_week where overdue_days>0 group by supplier order by oldest_days desc,supplier",
+  ],
+  [
+    "Which reviewed invoices are still clear for handoff?",
+    reads["handoff-ready"],
+  ],
 ];
-export const commands=[...Object.keys(reads),'show','history','insights','add-supplier','verify-supplier','add-order','receive','add','add-line','amend','approve','reject','record-posting','log','import','export','draft-query'];
-export function money(v){const s=String(v??'');if(!/^\d{1,10}(\.\d{1,2})?$/.test(s))throw Error('Amount must be a nonnegative decimal with at most two places');const [a,b='']=s.split('.');return Number(a)*100+Number(b.padEnd(2,'0'));}
-export function date(v){if(!/^\d{4}-\d{2}-\d{2}$/.test(v||'')||!Number.isFinite(Date.parse(v))||new Date(v).toISOString().slice(0,10)!==v)throw Error('Date must be a real YYYY-MM-DD date');return v;}
-function argsOf(args){const pos=[],o={};for(const a of args){if(a.startsWith('--')){const eq=a.indexOf('=');const k=a.slice(2,eq<0?undefined:eq);if(k in o)throw Error('Duplicate option: '+k);o[k]=eq<0?true:a.slice(eq+1);}else pos.push(a);}return {pos,o};}
-function needed(o,k){if(typeof o[k]!=='string'||!o[k].trim())throw Error('Required --'+k+'=value');return o[k].trim();}
-const currency=v=>{if(!/^[A-Z]{3}$/.test(v||''))throw Error('Currency must be three uppercase letters');return v;};
-const allowedTables=['suppliers','purchase_orders','receipts','invoices','invoice_lines','events','import_batches'];
-async function resolve(db,t,term){if(!['suppliers','purchase_orders','invoices'].includes(t))throw Error('Choose suppliers, purchase_orders or invoices');if(!term)throw Error('Record reference required');const exact=await db.query(`select * from ${t} where lower(code)=lower($1) or id::text=$1`,[term]);if(exact.length===1)return exact[0];const rows=await db.query(`select * from ${t} where starts_with(lower(code),lower($1)) or starts_with(id::text,$1) ${t==='suppliers'?"or strpos(lower(name),lower($1))>0":''} order by code`,[term]);if(rows.length!==1)throw Error((rows.length?'Ambiguous: ':'Not found. Available: ')+(rows.length?rows:await db.query(`select code from ${t} order by code`)).map(x=>x.code).join(', '));return rows[0];}
-async function event(db,row,kind,actor,note,before=null){await db.query('insert into events(entity_id,kind,actor,note,snapshot) values($1,$2,$3,$4,$5)',[row.id,kind,actor,note,JSON.stringify({before,after:row})]);return row;}
-async function insert(db,t,values){const keys=Object.keys(values);return (await db.query(`insert into ${t}(${keys.join(',')}) values(${keys.map((_,i)=>'$'+(i+1)).join(',')}) returning *`,Object.values(values)))[0];}
-function requireReview(i){if(i.status!=='review')throw Error('Only invoices in review can change');}
-async function update(db,i,values){const keys=Object.keys(values);return (await db.query(`update invoices set ${keys.map((k,n)=>k+'=$'+(n+2)).join(',')} where id=$1 returning *`,[i.id,...Object.values(values)]))[0];}
-function invoiceValues(o){const issue=date(needed(o,'issued')),due=date(needed(o,'due'));if(due<issue)throw Error('Due date precedes issue date');return {code:needed(o,'code'),invoice_number:needed(o,'number'),po_number:o.po||'',currency:currency(needed(o,'currency')),issued_on:issue,due_on:due,net_cents:money(needed(o,'net')),tax_cents:money(needed(o,'tax')),gross_cents:money(needed(o,'gross')),tax_jurisdiction:o.jurisdiction||'UNKNOWN',tax_evidence:o['tax-evidence']||'',description:o.description||'',buyer_name:o.buyer||'',buyer_ref:o['buyer-ref']||'',source_ref:o.evidence||'',owner:needed(o,'owner'),entered_by:needed(o,'actor')};}
-const aliases={id:['Document ID','Annotation ID'],supplier:['Vendor ID','Supplier ID'],supplier_name:['Vendor name','Supplier name'],number:['Invoice number'],issued:['Invoice Date','Issue date'],due:['Due date'],po:['PO Number'],currency:['Currency'],net:['Total without tax','Net amount'],tax:['Total tax','Tax amount'],gross:['Total amount'],description:['Description'],buyer:['Customer name','Buyer name'],buyer_ref:['Customer ID','Buyer ID'],evidence:['Document URL','Source reference'],line:['Line number'],line_description:['Item description','Line description'],line_net:['Item total','Line amount']};
-async function importRossum(db,file,o){const source=needed(o,'source'),actor=needed(o,'actor'),owner=needed(o,'owner');const raw=fs.readFileSync(file,'utf8'),hash=crypto.createHash('sha256').update(raw).digest('hex');const done=await db.query('select * from import_batches where source=$1 and file_hash=$2',[source,hash]);if(done.length)return {unchanged:true,invoices:done[0].invoice_count};
- const mapping=o.map?JSON.parse(fs.readFileSync(o.map,'utf8')):{};for(const k of Object.keys(mapping))if(!(k in aliases)||typeof mapping[k]!=='string')throw Error('Invalid mapping key '+k);
- const rows=parseCsv(raw);if(!rows.length)throw Error('Empty import');const groups=new Map();
- for(const row of rows){const v=Object.fromEntries(Object.entries(aliases).map(([k,n])=>[k,pick(row,...(mapping[k]?[mapping[k]]:n))]));v.currency=v.currency||o.currency||'';if(!v.supplier||!v.supplier_name||!v.number)throw Error('Vendor ID, Vendor name and Invoice number required');if(v.net===''){if(v.tax==='')throw Error('Explicit tax amount required');v.net=((money(v.gross)-money(v.tax))/100).toFixed(2);}
- const key=v.id||JSON.stringify([v.supplier,v.number]);const vals=invoiceValues({...v,code:'IMP-'+crypto.createHash('sha256').update(source+'\n'+key).digest('hex').slice(0,18),owner,actor,'buyer-ref':v.buyer_ref,jurisdiction:o.jurisdiction||'UNKNOWN','tax-evidence':o['tax-evidence']||''});
- const check={...vals,supplier:v.supplier,supplier_name:v.supplier_name};let g=groups.get(key);if(g&&JSON.stringify(g.check)!==JSON.stringify(check))throw Error('Conflicting repeated invoice headers: '+v.number);if(!g){g={v,vals,check,rows:[],lines:[]};groups.set(key,g);}g.rows.push(row);
- if(v.line_net!==''){if(!/^\d+$/.test(v.line)||Number(v.line)<1||!v.line_description)throw Error('Each exported line needs number, description and amount');if(g.lines.some(l=>l.line_number===Number(v.line)))throw Error('Duplicate line number');g.lines.push({line_number:Number(v.line),description:v.line_description,net_cents:money(v.line_net)});}
- }
- for(const [key,g]of groups){if(g.rows.length>1&&!g.lines.length&&!g.v.id)throw Error('Repeated header-only rows need Document ID to distinguish invoices');if(g.lines.length&&g.lines.length!==g.rows.length)throw Error('Every line row needs line fields');const sourceKey=JSON.stringify([source,key]);if((await db.query('select id from invoices where source_key=$1',[sourceKey])).length)throw Error('Existing source record changed or batch overlaps; reconcile explicitly: '+g.v.number);
- let s=(await db.query('select * from suppliers where code=$1',[g.v.supplier]))[0];if(s&&s.name!==g.v.supplier_name)throw Error('Vendor ID has a different name: '+g.v.supplier);if(!s){s=await insert(db,'suppliers',{code:g.v.supplier,name:g.v.supplier_name});await event(db,s,'import-supplier',actor,'Unverified imported supplier');}
- const i=await insert(db,'invoices',{...g.vals,supplier_id:s.id,source_key:sourceKey,original_data:JSON.stringify(g.rows)});for(const line of g.lines)await insert(db,'invoice_lines',{invoice_id:i.id,...line});await event(db,i,'import',actor,'Imported into review from '+source);
- }
- await insert(db,'import_batches',{source,file_hash:hash,invoice_count:groups.size,actor});return {invoices:groups.size,rows:rows.length,dry_run:!!o['dry-run'],source};
+export const commands = [
+  ...Object.keys(reads),
+  "show",
+  "history",
+  "insights",
+  "add-supplier",
+  "verify-supplier",
+  "add-order",
+  "receive",
+  "add",
+  "add-line",
+  "amend",
+  "approve",
+  "reject",
+  "record-posting",
+  "log",
+  "import",
+  "export",
+  "draft-query",
+];
+export function money(v) {
+  const s = String(v ?? "");
+  if (!/^\d{1,10}(\.\d{1,2})?$/.test(s))
+    throw Error("Amount must be a nonnegative decimal with at most two places");
+  const [a, b = ""] = s.split(".");
+  return Number(a) * 100 + Number(b.padEnd(2, "0"));
 }
-export async function run(db,args){const {pos,o}=argsOf(args),[cmd,...rest]=pos;
- if(cmd==='help'||!cmd)return {commands};if(!commands.includes(cmd))throw Error('Unknown command. Use help.');
- const flags={show:[],history:[],insights:[],export:['out','format'],'draft-query':[],import:['source','owner','map','currency','jurisdiction','tax-evidence','dry-run'],'add-supplier':['code','name','tax-number'],'verify-supplier':['evidence','note','tax-number'],'add-order':['code','supplier','currency','net','evidence'],receive:['code','po','net','date','evidence'],add:['code','supplier','number','po','currency','issued','due','net','tax','gross','description','buyer','buyer-ref','evidence','owner','jurisdiction','tax-evidence'],'add-line':['line','description','net'],amend:['number','po','description','buyer','buyer-ref','evidence','owner','net','tax','gross','issued','due','jurisdiction','tax-evidence','note'],approve:['evidence','note'],reject:['note'],'record-posting':['reference','note'],log:['note']};
- for(const k of Object.keys(o))if(!['json','actor',...(flags[cmd]||[])].includes(k))throw Error('Unknown option --'+k+' for '+cmd);
+export function date(v) {
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(v || "") ||
+    !Number.isFinite(Date.parse(v)) ||
+    new Date(v).toISOString().slice(0, 10) !== v
+  )
+    throw Error("Date must be a real YYYY-MM-DD date");
+  return v;
+}
+function argsOf(args) {
+  const pos = [],
+    o = {};
+  for (const a of args) {
+    if (a.startsWith("--")) {
+      const eq = a.indexOf("=");
+      const k = a.slice(2, eq < 0 ? undefined : eq);
+      if (k in o) throw Error("Duplicate option: " + k);
+      o[k] = eq < 0 ? true : a.slice(eq + 1);
+    } else pos.push(a);
+  }
+  return { pos, o };
+}
+function needed(o, k) {
+  if (typeof o[k] !== "string" || !o[k].trim())
+    throw Error("Required --" + k + "=value");
+  return o[k].trim();
+}
+const currency = (v) => {
+  if (!/^[A-Z]{3}$/.test(v || ""))
+    throw Error("Currency must be three uppercase letters");
+  return v;
+};
+const allowedTables = [
+  "suppliers",
+  "purchase_orders",
+  "receipts",
+  "invoices",
+  "invoice_lines",
+  "events",
+  "import_batches",
+];
+async function resolve(db, t, term) {
+  if (!["suppliers", "purchase_orders", "invoices"].includes(t))
+    throw Error("Choose suppliers, purchase_orders or invoices");
+  if (!term) throw Error("Record reference required");
+  const exact = await db.query(
+    `select * from ${t} where lower(code)=lower($1) or id::text=$1`,
+    [term],
+  );
+  if (exact.length === 1) return exact[0];
+  const rows = await db.query(
+    `select * from ${t} where starts_with(lower(code),lower($1)) or starts_with(id::text,$1) ${t === "suppliers" ? "or strpos(lower(name),lower($1))>0" : ""} order by code`,
+    [term],
+  );
+  if (rows.length !== 1)
+    throw Error(
+      (rows.length ? "Ambiguous: " : "Not found. Available: ") +
+        (rows.length
+          ? rows
+          : await db.query(`select code from ${t} order by code`)
+        )
+          .map((x) => x.code)
+          .join(", "),
+    );
+  return rows[0];
+}
+async function event(db, row, kind, actor, note, before = null) {
+  await db.query(
+    "insert into events(entity_id,kind,actor,note,snapshot) values($1,$2,$3,$4,$5)",
+    [row.id, kind, actor, note, JSON.stringify({ before, after: row })],
+  );
+  return row;
+}
+async function insert(db, t, values) {
+  const keys = Object.keys(values);
+  return (
+    await db.query(
+      `insert into ${t}(${keys.join(",")}) values(${keys.map((_, i) => "$" + (i + 1)).join(",")}) returning *`,
+      Object.values(values),
+    )
+  )[0];
+}
+function requireReview(i) {
+  if (i.status !== "review") throw Error("Only invoices in review can change");
+}
+async function update(db, i, values) {
+  const keys = Object.keys(values);
+  return (
+    await db.query(
+      `update invoices set ${keys.map((k, n) => k + "=$" + (n + 2)).join(",")} where id=$1 returning *`,
+      [i.id, ...Object.values(values)],
+    )
+  )[0];
+}
+function invoiceValues(o) {
+  const issue = date(needed(o, "issued")),
+    due = date(needed(o, "due"));
+  if (due < issue) throw Error("Due date precedes issue date");
+  return {
+    code: needed(o, "code"),
+    invoice_number: needed(o, "number"),
+    po_number: o.po || "",
+    currency: currency(needed(o, "currency")),
+    issued_on: issue,
+    due_on: due,
+    net_cents: money(needed(o, "net")),
+    tax_cents: money(needed(o, "tax")),
+    gross_cents: money(needed(o, "gross")),
+    tax_jurisdiction: o.jurisdiction || "UNKNOWN",
+    tax_evidence: o["tax-evidence"] || "",
+    description: o.description || "",
+    buyer_name: o.buyer || "",
+    buyer_ref: o["buyer-ref"] || "",
+    source_ref: o.evidence || "",
+    owner: needed(o, "owner"),
+    entered_by: needed(o, "actor"),
+  };
+}
+const aliases = {
+  id: ["Document ID", "Annotation ID"],
+  supplier: ["Vendor ID", "Supplier ID"],
+  supplier_name: ["Vendor name", "Supplier name"],
+  number: ["Invoice number"],
+  issued: ["Invoice Date", "Issue date"],
+  due: ["Due date"],
+  po: ["PO Number"],
+  currency: ["Currency"],
+  net: ["Total without tax", "Net amount"],
+  tax: ["Total tax", "Tax amount"],
+  gross: ["Total amount"],
+  description: ["Description"],
+  buyer: ["Customer name", "Buyer name"],
+  buyer_ref: ["Customer ID", "Buyer ID"],
+  evidence: ["Document URL", "Source reference"],
+  line: ["Line number"],
+  line_description: ["Item description", "Line description"],
+  line_net: ["Item total", "Line amount"],
+};
+async function importRossum(db, file, o) {
+  const source = needed(o, "source"),
+    actor = needed(o, "actor"),
+    owner = needed(o, "owner");
+  const raw = fs.readFileSync(file, "utf8"),
+    hash = crypto.createHash("sha256").update(raw).digest("hex");
+  const done = await db.query(
+    "select * from import_batches where source=$1 and file_hash=$2",
+    [source, hash],
+  );
+  if (done.length) return { unchanged: true, invoices: done[0].invoice_count };
+  const mapping = o.map ? JSON.parse(fs.readFileSync(o.map, "utf8")) : {};
+  for (const k of Object.keys(mapping))
+    if (!(k in aliases) || typeof mapping[k] !== "string")
+      throw Error("Invalid mapping key " + k);
+  const rows = parseCsv(raw);
+  if (!rows.length) throw Error("Empty import");
+  const groups = new Map();
+  for (const row of rows) {
+    const v = Object.fromEntries(
+      Object.entries(aliases).map(([k, n]) => [
+        k,
+        pick(row, ...(mapping[k] ? [mapping[k]] : n)),
+      ]),
+    );
+    v.currency = v.currency || o.currency || "";
+    if (!v.supplier || !v.supplier_name || !v.number)
+      throw Error("Vendor ID, Vendor name and Invoice number required");
+    if (v.net === "") {
+      if (v.tax === "") throw Error("Explicit tax amount required");
+      v.net = ((money(v.gross) - money(v.tax)) / 100).toFixed(2);
+    }
+    const key = v.id || JSON.stringify([v.supplier, v.number]);
+    const vals = invoiceValues({
+      ...v,
+      code:
+        "IMP-" +
+        crypto
+          .createHash("sha256")
+          .update(source + "\n" + key)
+          .digest("hex")
+          .slice(0, 18),
+      owner,
+      actor,
+      "buyer-ref": v.buyer_ref,
+      jurisdiction: o.jurisdiction || "UNKNOWN",
+      "tax-evidence": o["tax-evidence"] || "",
+    });
+    const check = {
+      ...vals,
+      supplier: v.supplier,
+      supplier_name: v.supplier_name,
+    };
+    let g = groups.get(key);
+    if (g && JSON.stringify(g.check) !== JSON.stringify(check))
+      throw Error("Conflicting repeated invoice headers: " + v.number);
+    if (!g) {
+      g = { v, vals, check, rows: [], lines: [] };
+      groups.set(key, g);
+    }
+    g.rows.push(row);
+    if (v.line_net !== "") {
+      if (!/^\d+$/.test(v.line) || Number(v.line) < 1 || !v.line_description)
+        throw Error("Each exported line needs number, description and amount");
+      if (g.lines.some((l) => l.line_number === Number(v.line)))
+        throw Error("Duplicate line number");
+      g.lines.push({
+        line_number: Number(v.line),
+        description: v.line_description,
+        net_cents: money(v.line_net),
+      });
+    }
+  }
+  for (const [key, g] of groups) {
+    if (g.rows.length > 1 && !g.lines.length && !g.v.id)
+      throw Error(
+        "Repeated header-only rows need Document ID to distinguish invoices",
+      );
+    if (g.lines.length && g.lines.length !== g.rows.length)
+      throw Error("Every line row needs line fields");
+    const sourceKey = JSON.stringify([source, key]);
+    if (
+      (
+        await db.query("select id from invoices where source_key=$1", [
+          sourceKey,
+        ])
+      ).length
+    )
+      throw Error(
+        "Existing source record changed or batch overlaps; reconcile explicitly: " +
+          g.v.number,
+      );
+    let s = (
+      await db.query("select * from suppliers where code=$1", [g.v.supplier])
+    )[0];
+    if (s && s.name !== g.v.supplier_name)
+      throw Error("Vendor ID has a different name: " + g.v.supplier);
+    if (!s) {
+      s = await insert(db, "suppliers", {
+        code: g.v.supplier,
+        name: g.v.supplier_name,
+      });
+      await event(
+        db,
+        s,
+        "import-supplier",
+        actor,
+        "Unverified imported supplier",
+      );
+    }
+    const i = await insert(db, "invoices", {
+      ...g.vals,
+      supplier_id: s.id,
+      source_key: sourceKey,
+      original_data: JSON.stringify(g.rows),
+    });
+    for (const line of g.lines)
+      await insert(db, "invoice_lines", { invoice_id: i.id, ...line });
+    await event(db, i, "import", actor, "Imported into review from " + source);
+  }
+  await insert(db, "import_batches", {
+    source,
+    file_hash: hash,
+    invoice_count: groups.size,
+    actor,
+  });
+  return {
+    invoices: groups.size,
+    rows: rows.length,
+    dry_run: !!o["dry-run"],
+    source,
+  };
+}
+export async function run(db, args) {
+  const { pos, o } = argsOf(args),
+    [cmd, ...rest] = pos;
+  if (cmd === "help" || !cmd) return { commands };
+  if (!commands.includes(cmd)) throw Error("Unknown command. Use help.");
+  const flags = {
+    show: [],
+    history: [],
+    insights: [],
+    export: ["out", "format"],
+    "draft-query": [],
+    import: [
+      "source",
+      "owner",
+      "map",
+      "currency",
+      "jurisdiction",
+      "tax-evidence",
+      "dry-run",
+    ],
+    "add-supplier": ["code", "name", "tax-number"],
+    "verify-supplier": ["evidence", "note", "tax-number"],
+    "add-order": ["code", "supplier", "currency", "net", "evidence"],
+    receive: ["code", "po", "net", "date", "evidence"],
+    add: [
+      "code",
+      "supplier",
+      "number",
+      "po",
+      "currency",
+      "issued",
+      "due",
+      "net",
+      "tax",
+      "gross",
+      "description",
+      "buyer",
+      "buyer-ref",
+      "evidence",
+      "owner",
+      "jurisdiction",
+      "tax-evidence",
+    ],
+    "add-line": ["line", "description", "net"],
+    amend: [
+      "number",
+      "po",
+      "description",
+      "buyer",
+      "buyer-ref",
+      "evidence",
+      "owner",
+      "net",
+      "tax",
+      "gross",
+      "issued",
+      "due",
+      "jurisdiction",
+      "tax-evidence",
+      "note",
+    ],
+    approve: ["evidence", "note"],
+    reject: ["note"],
+    "record-posting": ["reference", "note"],
+    log: ["note"],
+  };
+  for (const k of Object.keys(o))
+    if (!["json", "actor", ...(flags[cmd] || [])].includes(k))
+      throw Error("Unknown option --" + k + " for " + cmd);
 
- if(reads[cmd])return db.query(reads[cmd]);
- if(cmd==='insights'){const out=[];for(const [question,sql]of insightQueries)out.push({question,rows:await db.query(sql)});return out;}
- if(cmd==='show'){const i=await resolve(db,rest[0],rest[1]);return {record:i,...(rest[0]==='invoices'?{lines:await db.query('select line_number,description,net_cents from invoice_lines where invoice_id=$1 order by line_number',[i.id]),exceptions:await db.query('select rule,finding from invoice_exceptions where id=$1 order by rule',[i.id])}:{})};}
- if(cmd==='history'){const i=await resolve(db,'invoices',rest[0]);return db.query('select kind,actor,note,snapshot,created_at from events where entity_id=$1 order by created_at,id',[i.id]);}
- if(cmd==='export'){const dest=path.resolve(needed(o,'out'));let content;if(o.format==='csv'){const rows=await db.query(reads.invoices);const keys=['code','supplier','invoice_number','currency','net_cents','tax_cents','gross_cents','po_number','due_on','status'];const cell=v=>'"'+(/^[=+@\-\t\r]/.test(String(v))?"'":'')+String(v??'').replaceAll('"','""')+'"';content=[keys.map(cell).join(','),...rows.map(r=>keys.map(k=>cell(r[k])).join(','))].join('\r\n');}else{if(o.format&&o.format!=='json')throw Error('Choose json or csv');const data={format:'invoice-review-v1',exported_at:new Date().toISOString()};await db.exec('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');try{for(const t of allowedTables)data[t]=await db.query('select * from '+t+' order by id');}finally{await db.exec('ROLLBACK');}content=JSON.stringify(data,null,2);}fs.writeFileSync(dest,content+'\n',{flag:'wx',mode:0o600});return {file:dest};}
- if(cmd==='draft-query'){const i=await resolve(db,'invoices',rest[0]);const problems=await db.query('select rule,finding from invoice_exceptions where id=$1 order by rule',[i.id]);const file=writeOut('drafts',i.code.replace(/[^a-zA-Z0-9-]/g,'_')+'-'+crypto.randomUUID(),page({title:'Draft invoice evidence request',subtitle:'Internal draft, review before sending',sections:[{title:'Invoice',html:record(i,['code','invoice_number','owner','currency','gross_cents'])},{title:'Evidence to reconcile',html:table(problems)}]}));return {file};}
- const actor=needed(o,'actor');await db.exec('BEGIN');try{
- await db.exec('LOCK TABLE suppliers,purchase_orders,receipts,invoices,invoice_lines,import_batches IN SHARE ROW EXCLUSIVE MODE');let result;
- if(cmd==='import'){if(rest[0]!=='rossum'||!rest[1])throw Error('import rossum <file.csv> --source= --owner= --actor=');result=await importRossum(db,rest[1],o);}
- else if(cmd==='add-supplier'){const row=await insert(db,'suppliers',{code:needed(o,'code'),name:needed(o,'name'),tax_number:o['tax-number']||''});result=await event(db,row,cmd,actor,'Registered supplier');}
- else if(cmd==='verify-supplier'){const before=await resolve(db,'suppliers',rest[0]);const row=(await db.query('update suppliers set verified_ref=$2,tax_number=$3 where id=$1 returning *',[before.id,needed(o,'evidence'),o['tax-number']||before.tax_number]))[0];result=await event(db,row,cmd,actor,needed(o,'note'),before);}
- else if(cmd==='add-order'){const s=await resolve(db,'suppliers',needed(o,'supplier'));const row=await insert(db,'purchase_orders',{code:needed(o,'code'),supplier_id:s.id,currency:currency(needed(o,'currency')),net_cents:money(needed(o,'net')),evidence_ref:needed(o,'evidence')});result=await event(db,row,cmd,actor,'Recorded purchase order');}
- else if(cmd==='receive'){const p=await resolve(db,'purchase_orders',needed(o,'po'));const amount=money(needed(o,'net'));const total=Number((await db.query('select coalesce(sum(net_cents),0) n from receipts where po_id=$1',[p.id]))[0].n);if(total+amount>Number(p.net_cents))throw Error('Receipt exceeds order value');const day=date(needed(o,'date'));if(day>new Date().toISOString().slice(0,10))throw Error('Receipt date is in the future');const row=await insert(db,'receipts',{code:needed(o,'code'),po_id:p.id,net_cents:amount,received_on:day,evidence_ref:needed(o,'evidence'),actor});result=await event(db,row,cmd,actor,'Recorded goods receipt value');}
- else if(cmd==='add'){const s=await resolve(db,'suppliers',needed(o,'supplier'));const row=await insert(db,'invoices',{...invoiceValues(o),supplier_id:s.id});result=await event(db,row,cmd,actor,'Captured for review');}
- else {const i=await resolve(db,'invoices',rest[0]);
- if(cmd==='add-line'){requireReview(i);const n=needed(o,'line');if(!/^\d+$/.test(n))throw Error('Line number must be integer');const row=await insert(db,'invoice_lines',{invoice_id:i.id,line_number:Number(n),description:needed(o,'description'),net_cents:money(needed(o,'net'))});await event(db,i,cmd,actor,'Added line '+n);result=row;}
- else if(cmd==='amend'){requireReview(i);const changes={},mapping={number:'invoice_number',po:'po_number',description:'description',buyer:'buyer_name','buyer-ref':'buyer_ref',evidence:'source_ref',owner:'owner',jurisdiction:'tax_jurisdiction','tax-evidence':'tax_evidence'};for(const [flag,col]of Object.entries(mapping))if(flag in o)changes[col]=needed(o,flag);for(const k of ['net','tax','gross'])if(k in o)changes[k+'_cents']=money(needed(o,k));for(const [flag,col]of [['issued','issued_on'],['due','due_on']])if(flag in o)changes[col]=date(needed(o,flag));if(!Object.keys(changes).length)throw Error('No supported changes');result=await event(db,await update(db,i,changes),cmd,actor,needed(o,'note'),i);}
- else if(cmd==='approve'||cmd==='record-posting'){if(cmd==='approve'){requireReview(i);if(actor.toLowerCase()===i.entered_by.toLowerCase())throw Error('Second-person review required');}else if(i.status!=='ready')throw Error('Only ready invoices can record posting');const problems=await db.query('select rule,finding from invoice_exceptions where id=$1',[i.id]);if(problems.length)throw Error('Unresolved exceptions: '+problems.map(x=>x.rule).join(', '));const values=cmd==='approve'?{status:'ready',reviewed_by:actor,review_ref:needed(o,'evidence')}:{status:'posted',posting_ref:needed(o,'reference')};result=await event(db,await update(db,i,values),cmd,actor,needed(o,'note'),i);}
- else if(cmd==='reject'){requireReview(i);result=await event(db,await update(db,i,{status:'rejected'}),cmd,actor,needed(o,'note'),i);}
- else if(cmd==='log')result=await event(db,i,cmd,actor,needed(o,'note'));
- }
- await db.exec(o['dry-run']?'ROLLBACK':'COMMIT');return result;
- }catch(e){await db.exec('ROLLBACK');throw e;}
+  if (reads[cmd]) return db.query(reads[cmd]);
+  if (cmd === "insights") {
+    const out = [];
+    for (const [question, sql] of insightQueries)
+      out.push({ question, rows: await db.query(sql) });
+    return out;
+  }
+  if (cmd === "show") {
+    const i = await resolve(db, rest[0], rest[1]);
+    return {
+      record: i,
+      ...(rest[0] === "invoices"
+        ? {
+            lines: await db.query(
+              "select line_number,description,net_cents from invoice_lines where invoice_id=$1 order by line_number",
+              [i.id],
+            ),
+            exceptions: await db.query(
+              "select rule,finding from invoice_exceptions where id=$1 order by rule",
+              [i.id],
+            ),
+          }
+        : {}),
+    };
+  }
+  if (cmd === "history") {
+    const i = await resolve(db, "invoices", rest[0]);
+    return db.query(
+      "select kind,actor,note,snapshot,created_at from events where entity_id=$1 order by created_at,id",
+      [i.id],
+    );
+  }
+  if (cmd === "export") {
+    const dest = path.resolve(needed(o, "out"));
+    let content;
+    if (o.format === "csv") {
+      const rows = await db.query(reads.invoices);
+      const keys = [
+        "code",
+        "supplier",
+        "invoice_number",
+        "currency",
+        "net_cents",
+        "tax_cents",
+        "gross_cents",
+        "po_number",
+        "due_on",
+        "status",
+      ];
+      const cell = (v) =>
+        '"' +
+        (/^[=+@\-\t\r]/.test(String(v)) ? "'" : "") +
+        String(v ?? "").replaceAll('"', '""') +
+        '"';
+      content = [
+        keys.map(cell).join(","),
+        ...rows.map((r) => keys.map((k) => cell(r[k])).join(",")),
+      ].join("\r\n");
+    } else {
+      if (o.format && o.format !== "json") throw Error("Choose json or csv");
+      const data = {
+        format: "invoice-review-v1",
+        exported_at: new Date().toISOString(),
+      };
+      await db.exec("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+      try {
+        for (const t of allowedTables)
+          data[t] = await db.query("select * from " + t + " order by id");
+      } finally {
+        await db.exec("ROLLBACK");
+      }
+      content = JSON.stringify(data, null, 2);
+    }
+    fs.writeFileSync(dest, content + "\n", { flag: "wx", mode: 0o600 });
+    return { file: dest };
+  }
+  if (cmd === "draft-query") {
+    const i = await resolve(db, "invoices", rest[0]);
+    const problems = await db.query(
+      "select rule,finding from invoice_exceptions where id=$1 order by rule",
+      [i.id],
+    );
+    const file = writeOut(
+      "drafts",
+      i.code.replace(/[^a-zA-Z0-9-]/g, "_") + "-" + crypto.randomUUID(),
+      page({
+        title: "Draft invoice evidence request",
+        subtitle: "Internal draft, review before sending",
+        sections: [
+          {
+            title: "Invoice",
+            html: record(i, [
+              "code",
+              "invoice_number",
+              "owner",
+              "currency",
+              "gross_cents",
+            ]),
+          },
+          { title: "Evidence to reconcile", html: table(problems) },
+        ],
+      }),
+    );
+    return { file };
+  }
+  const actor = needed(o, "actor");
+  await db.exec("BEGIN");
+  try {
+    await db.exec(
+      "LOCK TABLE suppliers,purchase_orders,receipts,invoices,invoice_lines,import_batches IN SHARE ROW EXCLUSIVE MODE",
+    );
+    let result;
+    if (cmd === "import") {
+      if (rest[0] !== "rossum" || !rest[1])
+        throw Error("import rossum <file.csv> --source= --owner= --actor=");
+      result = await importRossum(db, rest[1], o);
+    } else if (cmd === "add-supplier") {
+      const row = await insert(db, "suppliers", {
+        code: needed(o, "code"),
+        name: needed(o, "name"),
+        tax_number: o["tax-number"] || "",
+      });
+      result = await event(db, row, cmd, actor, "Registered supplier");
+    } else if (cmd === "verify-supplier") {
+      const before = await resolve(db, "suppliers", rest[0]);
+      const row = (
+        await db.query(
+          "update suppliers set verified_ref=$2,tax_number=$3 where id=$1 returning *",
+          [
+            before.id,
+            needed(o, "evidence"),
+            o["tax-number"] || before.tax_number,
+          ],
+        )
+      )[0];
+      result = await event(db, row, cmd, actor, needed(o, "note"), before);
+    } else if (cmd === "add-order") {
+      const s = await resolve(db, "suppliers", needed(o, "supplier"));
+      const row = await insert(db, "purchase_orders", {
+        code: needed(o, "code"),
+        supplier_id: s.id,
+        currency: currency(needed(o, "currency")),
+        net_cents: money(needed(o, "net")),
+        evidence_ref: needed(o, "evidence"),
+      });
+      result = await event(db, row, cmd, actor, "Recorded purchase order");
+    } else if (cmd === "receive") {
+      const p = await resolve(db, "purchase_orders", needed(o, "po"));
+      const amount = money(needed(o, "net"));
+      const total = Number(
+        (
+          await db.query(
+            "select coalesce(sum(net_cents),0) n from receipts where po_id=$1",
+            [p.id],
+          )
+        )[0].n,
+      );
+      if (total + amount > Number(p.net_cents))
+        throw Error("Receipt exceeds order value");
+      const day = date(needed(o, "date"));
+      if (day > new Date().toISOString().slice(0, 10))
+        throw Error("Receipt date is in the future");
+      const row = await insert(db, "receipts", {
+        code: needed(o, "code"),
+        po_id: p.id,
+        net_cents: amount,
+        received_on: day,
+        evidence_ref: needed(o, "evidence"),
+        actor,
+      });
+      result = await event(db, row, cmd, actor, "Recorded goods receipt value");
+    } else if (cmd === "add") {
+      const s = await resolve(db, "suppliers", needed(o, "supplier"));
+      const row = await insert(db, "invoices", {
+        ...invoiceValues(o),
+        supplier_id: s.id,
+      });
+      result = await event(db, row, cmd, actor, "Captured for review");
+    } else {
+      const i = await resolve(db, "invoices", rest[0]);
+      if (cmd === "add-line") {
+        requireReview(i);
+        const n = needed(o, "line");
+        if (!/^\d+$/.test(n)) throw Error("Line number must be integer");
+        const row = await insert(db, "invoice_lines", {
+          invoice_id: i.id,
+          line_number: Number(n),
+          description: needed(o, "description"),
+          net_cents: money(needed(o, "net")),
+        });
+        await event(db, i, cmd, actor, "Added line " + n);
+        result = row;
+      } else if (cmd === "amend") {
+        requireReview(i);
+        const changes = {},
+          mapping = {
+            number: "invoice_number",
+            po: "po_number",
+            description: "description",
+            buyer: "buyer_name",
+            "buyer-ref": "buyer_ref",
+            evidence: "source_ref",
+            owner: "owner",
+            jurisdiction: "tax_jurisdiction",
+            "tax-evidence": "tax_evidence",
+          };
+        for (const [flag, col] of Object.entries(mapping))
+          if (flag in o) changes[col] = needed(o, flag);
+        for (const k of ["net", "tax", "gross"])
+          if (k in o) changes[k + "_cents"] = money(needed(o, k));
+        for (const [flag, col] of [
+          ["issued", "issued_on"],
+          ["due", "due_on"],
+        ])
+          if (flag in o) changes[col] = date(needed(o, flag));
+        if (!Object.keys(changes).length) throw Error("No supported changes");
+        result = await event(
+          db,
+          await update(db, i, changes),
+          cmd,
+          actor,
+          needed(o, "note"),
+          i,
+        );
+      } else if (cmd === "approve" || cmd === "record-posting") {
+        if (cmd === "approve") {
+          requireReview(i);
+          if (actor.toLowerCase() === i.entered_by.toLowerCase())
+            throw Error("Second-person review required");
+        } else if (i.status !== "ready")
+          throw Error("Only ready invoices can record posting");
+        const problems = await db.query(
+          "select rule,finding from invoice_exceptions where id=$1",
+          [i.id],
+        );
+        if (problems.length)
+          throw Error(
+            "Unresolved exceptions: " + problems.map((x) => x.rule).join(", "),
+          );
+        const values =
+          cmd === "approve"
+            ? {
+                status: "ready",
+                reviewed_by: actor,
+                review_ref: needed(o, "evidence"),
+              }
+            : { status: "posted", posting_ref: needed(o, "reference") };
+        result = await event(
+          db,
+          await update(db, i, values),
+          cmd,
+          actor,
+          needed(o, "note"),
+          i,
+        );
+      } else if (cmd === "reject") {
+        requireReview(i);
+        result = await event(
+          db,
+          await update(db, i, { status: "rejected" }),
+          cmd,
+          actor,
+          needed(o, "note"),
+          i,
+        );
+      } else if (cmd === "log")
+        result = await event(db, i, cmd, actor, needed(o, "note"));
+    }
+    await db.exec(o["dry-run"] ? "ROLLBACK" : "COMMIT");
+    return result;
+  } catch (e) {
+    await db.exec("ROLLBACK");
+    throw e;
+  }
 }
-export function human(value){if(Array.isArray(value)){if(!value.length)return 'No records.';if(value[0].question)return value.map(x=>x.question+'\n'+human(x.rows)).join('\n\n');const cols=Object.keys(value[0]).filter(k=>!['id','snapshot','original_data'].includes(k));const widths=cols.map(k=>Math.min(60,Math.max(k.length,...value.map(r=>String(r[k]??'').length))));const row=r=>cols.map((k,n)=>String(r[k]??'').slice(0,widths[n]).padEnd(widths[n])).join(' | ');return [row(Object.fromEntries(cols.map(k=>[k,k]))),widths.map(n=>'-'.repeat(n)).join('-+-'),...value.map(row)].join('\n');}return JSON.stringify(value,null,2);}
-if(process.argv[1]&&import.meta.url===pathToFileURL(path.resolve(process.argv[1])).href){let db;try{db=await getDb();const out=await run(db,process.argv.slice(2));console.log(process.argv.includes('--json')?JSON.stringify(out,null,2):human(out));}catch(e){console.error(e.message);process.exitCode=1;}finally{if(db)await db.close();}}
+export function human(value) {
+  if (Array.isArray(value)) {
+    if (!value.length) return "No records.";
+    if (value[0].question)
+      return value.map((x) => x.question + "\n" + human(x.rows)).join("\n\n");
+    const cols = Object.keys(value[0]).filter(
+      (k) => !["id", "snapshot", "original_data"].includes(k),
+    );
+    const widths = cols.map((k) =>
+      Math.min(
+        60,
+        Math.max(k.length, ...value.map((r) => String(r[k] ?? "").length)),
+      ),
+    );
+    const row = (r) =>
+      cols
+        .map((k, n) =>
+          String(r[k] ?? "")
+            .slice(0, widths[n])
+            .padEnd(widths[n]),
+        )
+        .join("  ");
+    return [
+      row(Object.fromEntries(cols.map((k) => [k, k.replaceAll("_", " ")]))),
+      widths.map((n) => "-".repeat(n)).join("  "),
+      ...value.map(row),
+    ].join("\n");
+  }
+  return JSON.stringify(value, null, 2);
+}
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href
+) {
+  let db;
+  try {
+    db = await getDb();
+    const out = await run(db, process.argv.slice(2));
+    console.log(
+      process.argv.includes("--json")
+        ? JSON.stringify(out, null, 2)
+        : human(out),
+    );
+  } catch (e) {
+    console.error(e.message);
+    process.exitCode = 1;
+  } finally {
+    if (db) await db.close();
+  }
+}

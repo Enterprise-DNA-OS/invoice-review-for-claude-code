@@ -1,50 +1,440 @@
-import assert from 'node:assert/strict';import fs from 'node:fs';import os from 'node:os';import path from 'node:path';import {spawnSync} from 'node:child_process';
-const temp=fs.mkdtempSync(path.join(os.tmpdir(),'invoice-review-'));process.env.DATA_DIR=path.join(temp,'db');process.env.OUTPUT_DIR=temp;process.env.DATABASE_URL=process.env.TEST_DATABASE_URL||'';
-const {getDb,REPO_ROOT}=await import('./lib/db.mjs');const {migrate}=await import('./migrate.mjs');const {seed}=await import('./seed.mjs');const {run,commands,reads,money,date}=await import('./invoice.mjs');const {parseCsv}=await import('./lib/csv.mjs');const {table}=await import('./lib/render.mjs');
-const db=await getDb(),schema='invoice_test_'+Date.now(),visited=new Set();let checks=0;
-const eq=(a,b)=>{assert.deepEqual(a,b);checks++;};const ok=x=>{assert.ok(x);checks++;};const call=(...a)=>{visited.add(a[0]);return run(db,a);};const fail=async(a,re)=>{await assert.rejects(()=>call(...a),re);checks++;};const count=async t=>Number((await db.query('select count(*) n from '+t))[0].n);const a='--actor=Operator';const day=new Date().toISOString().slice(0,10);const file=(name,text)=>{const p=path.join(temp,name);fs.writeFileSync(p,text);return p;};
-const invoke=(script,args=[])=>{const env={...process.env};if(db.mode==='postgres'){const url=new URL(process.env.TEST_DATABASE_URL);url.searchParams.set('options','-c search_path='+schema);env.DATABASE_URL=url.href;}const p=spawnSync(process.execPath,[path.join(REPO_ROOT,'scripts',script),...args],{cwd:REPO_ROOT,env,encoding:'utf8'});return p;};
-try{
- if(db.mode==='postgres')await db.exec('create schema '+schema+'; set search_path to '+schema);
- eq((await migrate(db)).ran.length,1);eq((await migrate(db)).ran.length,0);await seed(db);await seed(db);eq(await count('invoices'),5);
- for(const cmd of Object.keys(reads))ok(Array.isArray(await call(cmd)));eq((await call('insights')).length,10);ok((await call('show','suppliers','south')).record.name.includes('Quay'));ok((await call('show','invoices','INV-105')).lines.length===1);
- await fail(['show','invoices','INV'],/Ambiguous/);await fail(['show','invoices','missing'],/Available/);await fail(['show','events','x'],/Choose/);
- eq(money('10.01'),1001);for(const x of ['1.001','-1','NaN','1e2','1,000']){assert.throws(()=>money(x));checks++;}for(const x of ['2026-02-30','2026-13-01','not-a-date']){assert.throws(()=>date(x));checks++;}
- await fail(['approve','INV-102','--actor=Reviewer','--evidence=E','--note=Check'],/RECEIPT/);await fail(['approve','INV-101','--actor=Reviewer','--evidence=E','--note=Check'],/DUPLICATE/);await fail(['approve','INV-105','--actor=Demo intake','--evidence=E','--note=Check'],/Second-person/);
- await call('add-supplier','--code=TEST','--name=Test Vendor','--tax-number=333-333-333',a);await call('add-supplier','--code=TEST2','--name=Test Vendor Two',a);await fail(['show','suppliers','Test Vendor'],/Ambiguous/);
- await call('verify-supplier','TEST','--evidence=identity-check','--note=Checked supplier',a).catch(async e=>{if(!/Ambiguous/.test(e.message))throw e;const s=(await db.query("select id from suppliers where code='TEST'"))[0];await call('verify-supplier',s.id,'--evidence=identity-check','--note=Checked supplier',a);});
- const sid=(await db.query("select id from suppliers where code='TEST'"))[0].id;
- await call('add-order','--code=TEST-PO','--supplier='+sid,'--currency=NZD','--net=1000','--evidence=approved-order',a);
- await fail(['receive','--code=BAD','--po=TEST-PO','--net=1001','--date='+day,'--evidence=delivery',a],/exceeds/);
- await call('receive','--code=TEST-GR','--po=TEST-PO','--net=1000','--date='+day,'--evidence=delivery',a);
- const add=(code,number='A001',net='100',tax='15',gross='115')=>['add','--code='+code,'--supplier='+sid,'--number='+number,'--po=TEST-PO','--currency=NZD','--issued=2026-01-01','--due=2026-02-01','--net='+net,'--tax='+tax,'--gross='+gross,'--owner=Fin','--description=Widgets','--evidence=invoice.pdf','--jurisdiction=NZ',a];
- await call(...add('TEST-I'));await call('add-line','TEST-I','--line=1','--description=Widgets','--net=90',a);
- await fail(['approve','TEST-I','--actor=Reviewer','--evidence=review','--note=Checked'],/LINES/);
- await call('add-line','TEST-I','--line=2','--description=Delivery','--net=10',a);
- await call('amend','TEST-I','--gross=116','--note=Testing mismatch',a);await fail(['approve','TEST-I','--actor=Reviewer','--evidence=review','--note=Checked'],/TOTALS/);
- await call('amend','TEST-I','--gross=115','--note=Correct source total',a);await call('log','TEST-I','--note=Original checked',a);
- await call('approve','TEST-I','--actor=Reviewer','--evidence=signed-review','--note=Supplier, order and receipt checked');eq((await call('handoff-ready')).find(x=>x.code==='TEST-I').reviewed_by,'Reviewer');
- await fail(['amend','TEST-I','--net=1','--note=Bad edit',a],/Only invoices/);
- await call(...add('TEST-DUP','A-001'));ok((await call('duplicates')).some(x=>x.code==='TEST-I'));await fail(['record-posting','TEST-I','--reference=ERP1','--note=Posted',a],/DUPLICATE/);await call('reject','TEST-DUP','--note=Confirmed duplicate, original retained',a);
- await call('record-posting','TEST-I','--reference=ERP-100','--note=Finance confirmed posting',a);eq((await call('show','invoices','TEST-I')).record.status,'posted');await fail(['record-posting','TEST-I','--reference=ERP-100','--note=Again',a],/Only ready/);
- await call(...add('TEST-LARGE','L001','950','142.50','1092.50'));await fail(['approve','TEST-LARGE','--actor=Reviewer','--evidence=review','--note=Checked'],/PO_LIMIT/);ok((await call('compliance')).some(x=>x.code==='TEST-LARGE'&&x.rule==='NZ_BUYER'));
- await call('amend','TEST-LARGE','--net=800','--tax=120','--gross=920','--note=Corrected source values',a);await call('approve','TEST-LARGE','--actor=Reviewer','--evidence=review','--note=Checked');
- const sample=path.join(REPO_ROOT,'examples/rossum-invoices.csv'),opts=['--source=demo-export','--owner=Fin',a,'--jurisdiction=NZ'];
- const before=await count('invoices'),events=await count('events');eq((await call('import','rossum',sample,...opts,'--dry-run')).invoices,1);eq(await count('invoices'),before);eq(await count('events'),events);
- eq((await call('import','rossum',sample,...opts)).invoices,1);eq(await count('invoices'),before+1);eq((await call('import','rossum',sample,...opts)).unchanged,true);
- const imported=(await db.query("select * from invoices where source_key is not null"))[0];eq((await db.query('select count(*) n from invoice_lines where invoice_id=$1',[imported.id]))[0].n.toString(),'2');eq(imported.status,'review');eq(imported.tax_jurisdiction,'NZ');
- const raw=fs.readFileSync(sample,'utf8');await fail(['import','rossum',file('overlap.csv',raw.replaceAll('115.00','116.00')),...opts],/Existing source/);
- await fail(['import','rossum',file('conflict.csv',raw.replace('Small cartons','Small cartons').replace(/115\.00(?=[^]*Large cartons)/,'116.00')),'--source=conflict','--owner=Fin',a],/Conflicting/);
- const late=raw.trim()+'\n90002,NEW,2026-10-01,PO-X,2026-11-15,Wrong Name,SOUTH,Buyer,Ref,10.00,10.00,0,NZD,Goods,ref,1,Goods,10.00\n';
- await fail(['import','rossum',file('late.csv',late),'--source=rollback','--owner=Fin',a],/different name/);eq(await count('invoices'),before+1);ok(!(await call('imports')).some(x=>x.source==='rollback'));
- await fail(['import','rossum',file('missing-tax.csv',raw.replaceAll('15.00,NZD',',NZD')),'--source=tax','--owner=Fin',a],/Required --tax/);
- eq(parseCsv('\ufeffa,b\r\n"two\nlines","x""y"\r\n')[0].a,'two\nlines');assert.throws(()=>parseCsv('a,a\n1,2'));checks++;assert.throws(()=>parseCsv('a,b\n"x,y'));checks++;
- const exported=await call('export','--out='+path.join(temp,'full.json'));const snapshot=JSON.parse(fs.readFileSync(exported.file));eq(snapshot.invoices.length,before+1);eq(snapshot.invoice_lines.length,5);await fail(['export','--out='+exported.file],/EEXIST/);
- await call('export','--format=csv','--out='+path.join(temp,'register.csv'));ok(fs.readFileSync(path.join(temp,'register.csv'),'utf8').includes('ERP')===false);ok((await call('history','TEST-I')).length>=5);
- const draft=await call('draft-query','INV-102');ok(fs.existsSync(draft.file));ok(fs.readFileSync(draft.file,'utf8').includes('RECEIPT'));ok(table([{x:'<script>bad</script>'}]).includes('&lt;script&gt;'));
- await assert.rejects(()=>db.exec("update events set note='changed'"),/Append-only/);checks++;
- for(const script of ['view.mjs','docs.mjs']){const p=invoke(script);eq(p.status,0);ok(p.stdout.includes(script==='view.mjs'?'view:':'document(s)'));}
- const cli=invoke('invoice.mjs',['invoices','--json']);eq(cli.status,0);ok(JSON.parse(cli.stdout).length>0);const bad=invoke('invoice.mjs',['show','invoices','INV']);eq(bad.status,1);ok(bad.stderr.includes('Ambiguous'));
- const rls=await db.query("select relname from pg_class where relname in ('suppliers','invoices','events','invoice_lines','purchase_orders','receipts','import_batches') and relrowsecurity");ok(rls.length>=7);
- eq(commands.filter(c=>!visited.has(c)),[]);console.log(`PASS: ${checks} assertions; ${commands.length} CLI commands; ${db.mode}; atomic imports, review gates, duplicates, cents, exports and HTML rendering`);
-}finally{if(db.mode==='postgres')await db.exec('drop schema '+schema+' cascade');await db.close();fs.rmSync(temp,{recursive:true,force:true});}
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+const temp = fs.mkdtempSync(path.join(os.tmpdir(), "invoice-review-"));
+process.env.DATA_DIR = path.join(temp, "db");
+process.env.OUTPUT_DIR = temp;
+process.env.DATABASE_URL = process.env.TEST_DATABASE_URL || "";
+const { getDb, REPO_ROOT } = await import("./lib/db.mjs");
+const { migrate } = await import("./migrate.mjs");
+const { seed } = await import("./seed.mjs");
+const { run, commands, reads, money, date } = await import("./invoice.mjs");
+const { parseCsv } = await import("./lib/csv.mjs");
+const { table } = await import("./lib/render.mjs");
+const db = await getDb(),
+  schema = "invoice_test_" + Date.now(),
+  visited = new Set();
+let checks = 0;
+const eq = (a, b) => {
+  assert.deepEqual(a, b);
+  checks++;
+};
+const ok = (x) => {
+  assert.ok(x);
+  checks++;
+};
+const call = (...a) => {
+  visited.add(a[0]);
+  return run(db, a);
+};
+const fail = async (a, re) => {
+  await assert.rejects(() => call(...a), re);
+  checks++;
+};
+const count = async (t) =>
+  Number((await db.query("select count(*) n from " + t))[0].n);
+const a = "--actor=Operator";
+const day = new Date().toISOString().slice(0, 10);
+const file = (name, text) => {
+  const p = path.join(temp, name);
+  fs.writeFileSync(p, text);
+  return p;
+};
+const invoke = (script, args = []) => {
+  const env = { ...process.env };
+  if (db.mode === "postgres") {
+    const url = new URL(process.env.TEST_DATABASE_URL);
+    url.searchParams.set("options", "-c search_path=" + schema);
+    env.DATABASE_URL = url.href;
+  }
+  const p = spawnSync(
+    process.execPath,
+    [path.join(REPO_ROOT, "scripts", script), ...args],
+    { cwd: REPO_ROOT, env, encoding: "utf8" },
+  );
+  return p;
+};
+try {
+  if (db.mode === "postgres")
+    await db.exec("create schema " + schema + "; set search_path to " + schema);
+  eq((await migrate(db)).ran.length, 1);
+  eq((await migrate(db)).ran.length, 0);
+  await seed(db);
+  await seed(db);
+  eq(await count("invoices"), 5);
+  for (const cmd of Object.keys(reads)) ok(Array.isArray(await call(cmd)));
+  eq((await call("insights")).length, 10);
+  ok((await call("attention")).every(row => Number(row.overdue_days) >= 0));
+  ok((await call("show", "suppliers", "south")).record.name.includes("Quay"));
+  ok((await call("show", "invoices", "INV-105")).lines.length === 1);
+  await fail(["show", "invoices", "INV"], /Ambiguous/);
+  await fail(["show", "invoices", "missing"], /Available/);
+  await fail(["show", "events", "x"], /Choose/);
+  eq(money("10.01"), 1001);
+  for (const x of ["1.001", "-1", "NaN", "1e2", "1,000"]) {
+    assert.throws(() => money(x));
+    checks++;
+  }
+  for (const x of ["2026-02-30", "2026-13-01", "not-a-date"]) {
+    assert.throws(() => date(x));
+    checks++;
+  }
+  await fail(
+    ["approve", "INV-102", "--actor=Reviewer", "--evidence=E", "--note=Check"],
+    /RECEIPT/,
+  );
+  await fail(
+    ["approve", "INV-101", "--actor=Reviewer", "--evidence=E", "--note=Check"],
+    /DUPLICATE/,
+  );
+  await fail(
+    [
+      "approve",
+      "INV-105",
+      "--actor=Demo intake",
+      "--evidence=E",
+      "--note=Check",
+    ],
+    /Second-person/,
+  );
+  await call(
+    "add-supplier",
+    "--code=TEST",
+    "--name=Test Vendor",
+    "--tax-number=333-333-333",
+    a,
+  );
+  await call("add-supplier", "--code=TEST2", "--name=Test Vendor Two", a);
+  await fail(["show", "suppliers", "Test Vendor"], /Ambiguous/);
+  await call(
+    "verify-supplier",
+    "TEST",
+    "--evidence=identity-check",
+    "--note=Checked supplier",
+    a,
+  ).catch(async (e) => {
+    if (!/Ambiguous/.test(e.message)) throw e;
+    const s = (await db.query("select id from suppliers where code='TEST'"))[0];
+    await call(
+      "verify-supplier",
+      s.id,
+      "--evidence=identity-check",
+      "--note=Checked supplier",
+      a,
+    );
+  });
+  const sid = (await db.query("select id from suppliers where code='TEST'"))[0]
+    .id;
+  await call(
+    "add-order",
+    "--code=TEST-PO",
+    "--supplier=" + sid,
+    "--currency=NZD",
+    "--net=1000",
+    "--evidence=approved-order",
+    a,
+  );
+  await fail(
+    [
+      "receive",
+      "--code=BAD",
+      "--po=TEST-PO",
+      "--net=1001",
+      "--date=" + day,
+      "--evidence=delivery",
+      a,
+    ],
+    /exceeds/,
+  );
+  await call(
+    "receive",
+    "--code=TEST-GR",
+    "--po=TEST-PO",
+    "--net=1000",
+    "--date=" + day,
+    "--evidence=delivery",
+    a,
+  );
+  const add = (
+    code,
+    number = "A001",
+    net = "100",
+    tax = "15",
+    gross = "115",
+  ) => [
+    "add",
+    "--code=" + code,
+    "--supplier=" + sid,
+    "--number=" + number,
+    "--po=TEST-PO",
+    "--currency=NZD",
+    "--issued=2026-01-01",
+    "--due=2026-02-01",
+    "--net=" + net,
+    "--tax=" + tax,
+    "--gross=" + gross,
+    "--owner=Fin",
+    "--description=Widgets",
+    "--evidence=invoice.pdf",
+    "--jurisdiction=NZ",
+    a,
+  ];
+  await call(...add("TEST-I"));
+  await call(
+    "add-line",
+    "TEST-I",
+    "--line=1",
+    "--description=Widgets",
+    "--net=90",
+    a,
+  );
+  await fail(
+    [
+      "approve",
+      "TEST-I",
+      "--actor=Reviewer",
+      "--evidence=review",
+      "--note=Checked",
+    ],
+    /LINES/,
+  );
+  await call(
+    "add-line",
+    "TEST-I",
+    "--line=2",
+    "--description=Delivery",
+    "--net=10",
+    a,
+  );
+  await call("amend", "TEST-I", "--gross=116", "--note=Testing mismatch", a);
+  await fail(
+    [
+      "approve",
+      "TEST-I",
+      "--actor=Reviewer",
+      "--evidence=review",
+      "--note=Checked",
+    ],
+    /TOTALS/,
+  );
+  await call(
+    "amend",
+    "TEST-I",
+    "--gross=115",
+    "--note=Correct source total",
+    a,
+  );
+  await call("log", "TEST-I", "--note=Original checked", a);
+  await call(
+    "approve",
+    "TEST-I",
+    "--actor=Reviewer",
+    "--evidence=signed-review",
+    "--note=Supplier, order and receipt checked",
+  );
+  eq(
+    (await call("handoff-ready")).find((x) => x.code === "TEST-I").reviewed_by,
+    "Reviewer",
+  );
+  await fail(
+    ["amend", "TEST-I", "--net=1", "--note=Bad edit", a],
+    /Only invoices/,
+  );
+  await call(...add("TEST-DUP", "A-001"));
+  ok((await call("duplicates")).some((x) => x.code === "TEST-I"));
+  await fail(
+    ["record-posting", "TEST-I", "--reference=ERP1", "--note=Posted", a],
+    /DUPLICATE/,
+  );
+  await call(
+    "reject",
+    "TEST-DUP",
+    "--note=Confirmed duplicate, original retained",
+    a,
+  );
+  await call(
+    "record-posting",
+    "TEST-I",
+    "--reference=ERP-100",
+    "--note=Finance confirmed posting",
+    a,
+  );
+  eq((await call("show", "invoices", "TEST-I")).record.status, "posted");
+  await fail(
+    ["record-posting", "TEST-I", "--reference=ERP-100", "--note=Again", a],
+    /Only ready/,
+  );
+  await call(...add("TEST-LARGE", "L001", "950", "142.50", "1092.50"));
+  await fail(
+    [
+      "approve",
+      "TEST-LARGE",
+      "--actor=Reviewer",
+      "--evidence=review",
+      "--note=Checked",
+    ],
+    /PO_LIMIT/,
+  );
+  ok(
+    (await call("compliance")).some(
+      (x) => x.code === "TEST-LARGE" && x.rule === "NZ_BUYER",
+    ),
+  );
+  await call(
+    "amend",
+    "TEST-LARGE",
+    "--net=800",
+    "--tax=120",
+    "--gross=920",
+    "--note=Corrected source values",
+    a,
+  );
+  await call(
+    "approve",
+    "TEST-LARGE",
+    "--actor=Reviewer",
+    "--evidence=review",
+    "--note=Checked",
+  );
+  const sample = path.join(REPO_ROOT, "examples/rossum-invoices.csv"),
+    opts = ["--source=demo-export", "--owner=Fin", a, "--jurisdiction=NZ"];
+  const before = await count("invoices"),
+    events = await count("events");
+  eq(
+    (await call("import", "rossum", sample, ...opts, "--dry-run")).invoices,
+    1,
+  );
+  eq(await count("invoices"), before);
+  eq(await count("events"), events);
+  eq((await call("import", "rossum", sample, ...opts)).invoices, 1);
+  eq(await count("invoices"), before + 1);
+  eq((await call("import", "rossum", sample, ...opts)).unchanged, true);
+  const imported = (
+    await db.query("select * from invoices where source_key is not null")
+  )[0];
+  eq(
+    (
+      await db.query(
+        "select count(*) n from invoice_lines where invoice_id=$1",
+        [imported.id],
+      )
+    )[0].n.toString(),
+    "2",
+  );
+  eq(imported.status, "review");
+  eq(imported.tax_jurisdiction, "NZ");
+  const raw = fs.readFileSync(sample, "utf8");
+  await fail(
+    [
+      "import",
+      "rossum",
+      file("overlap.csv", raw.replaceAll("115.00", "116.00")),
+      ...opts,
+    ],
+    /Existing source/,
+  );
+  await fail(
+    [
+      "import",
+      "rossum",
+      file(
+        "conflict.csv",
+        raw
+          .replace("Small cartons", "Small cartons")
+          .replace(/115\.00(?=[^]*Large cartons)/, "116.00"),
+      ),
+      "--source=conflict",
+      "--owner=Fin",
+      a,
+    ],
+    /Conflicting/,
+  );
+  const late =
+    raw.trim() +
+    "\n90002,NEW,2026-10-01,PO-X,2026-11-15,Wrong Name,SOUTH,Buyer,Ref,10.00,10.00,0,NZD,Goods,ref,1,Goods,10.00\n";
+  await fail(
+    [
+      "import",
+      "rossum",
+      file("late.csv", late),
+      "--source=rollback",
+      "--owner=Fin",
+      a,
+    ],
+    /different name/,
+  );
+  eq(await count("invoices"), before + 1);
+  ok(!(await call("imports")).some((x) => x.source === "rollback"));
+  await fail(
+    [
+      "import",
+      "rossum",
+      file("missing-tax.csv", raw.replaceAll("15.00,NZD", ",NZD")),
+      "--source=tax",
+      "--owner=Fin",
+      a,
+    ],
+    /Required --tax/,
+  );
+  eq(parseCsv('\ufeffa,b\r\n"two\nlines","x""y"\r\n')[0].a, "two\nlines");
+  assert.throws(() => parseCsv("a,a\n1,2"));
+  checks++;
+  assert.throws(() => parseCsv('a,b\n"x,y'));
+  checks++;
+  const exported = await call(
+    "export",
+    "--out=" + path.join(temp, "full.json"),
+  );
+  const snapshot = JSON.parse(fs.readFileSync(exported.file));
+  eq(snapshot.invoices.length, before + 1);
+  eq(snapshot.invoice_lines.length, 5);
+  await fail(["export", "--out=" + exported.file], /EEXIST/);
+  await call(
+    "export",
+    "--format=csv",
+    "--out=" + path.join(temp, "register.csv"),
+  );
+  ok(
+    fs.readFileSync(path.join(temp, "register.csv"), "utf8").includes("ERP") ===
+      false,
+  );
+  ok((await call("history", "TEST-I")).length >= 5);
+  const draft = await call("draft-query", "INV-102");
+  ok(fs.existsSync(draft.file));
+  ok(fs.readFileSync(draft.file, "utf8").includes("RECEIPT"));
+  ok(table([{ x: "<script>bad</script>" }]).includes("&lt;script&gt;"));
+  await assert.rejects(
+    () => db.exec("update events set note='changed'"),
+    /Append-only/,
+  );
+  checks++;
+  for (const script of ["view.mjs", "docs.mjs"]) {
+    const p = invoke(script);
+    eq(p.status, 0);
+    ok(p.stdout.includes(script === "view.mjs" ? "view:" : "document(s)"));
+  }
+  const cli = invoke("invoice.mjs", ["invoices", "--json"]);
+  eq(cli.status, 0);
+  ok(JSON.parse(cli.stdout).length > 0);
+  const bad = invoke("invoice.mjs", ["show", "invoices", "INV"]);
+  eq(bad.status, 1);
+  ok(bad.stderr.includes("Ambiguous"));
+  const rls = await db.query(
+    "select relname from pg_class where relname in ('suppliers','invoices','events','invoice_lines','purchase_orders','receipts','import_batches') and relrowsecurity",
+  );
+  ok(rls.length >= 7);
+  eq(
+    commands.filter((c) => !visited.has(c)),
+    [],
+  );
+  console.log(
+    `PASS: ${checks} assertions; ${commands.length} CLI commands; ${db.mode}; atomic imports, review gates, duplicates, cents, exports and HTML rendering`,
+  );
+} finally {
+  if (db.mode === "postgres")
+    await db.exec("drop schema " + schema + " cascade");
+  await db.close();
+  fs.rmSync(temp, { recursive: true, force: true });
+}
