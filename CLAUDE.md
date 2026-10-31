@@ -1,43 +1,49 @@
-# Invoice Review for Claude Code: operating instructions
+# Invoice Review for Claude Code
 
-This file is the brain. Claude Code reads it at the start of every session. It says who this is for, how work gets done, and the one right way to do each recurring job.
+Run the supplier invoice review desk. Read README.md and docs/compliance.md first. Establish organisation, database, named operator and scope. One organisation per database, trusted operators only. Fictional demonstration data is never evidence about a real supplier.
 
-## Who this is for
+Use scripts/invoice.mjs for ordinary work. Read /show before a change. An actor label is attribution, not authentication. Never invent identities, evidence or a human review. Use the operator's authorised decision. Never post to accounting, change bank details, pay an invoice, file tax or send a message.
 
-- **Business:** [YOUR BUSINESS]
-- **Operator:** [YOUR NAME], [your role]
-- **What matters most:** [the one or two outcomes you care about]
+All runtimes use the one command library in .claude/commands/. Commands are recipes, not a second executable system.
 
-Fill this in once. A worker with context knows. A worker without it guesses.
-
-## How to work
-
-1. **Take a brief, not a script.** The operator describes the outcome. You run the right command and present the answer.
-2. **Read before you write.** Before drafting anything about a record, read its full history first.
-3. **Plain language.** Short sentences. No filler. Numbers in tables.
-4. **Silent success, loud problems.** No play-by-play. Say what broke and what you did about it.
-5. **Stop at the line.** Anything that sends, deletes, or faces a customer waits for a yes in this session.
-
-## Routing table: one right way for each recurring job
-
-| When the operator asks for... | Use this |
+| Command | Job |
 |---|---|
-| <!-- TODO(author): one row per slash command --> | `/...` |
+| /suppliers | Read supplier identities and verification references. |
+| /orders | Reconcile ordered, received and invoiced amounts without mixing currencies. |
+| /receipts | Read recorded delivery evidence. |
+| /invoices | Read invoice totals, owners and status. |
+| /review-queue | Plan today's invoice review work. |
+| /attention | Read overdue invoices and their evidence gaps. |
+| /exceptions | Read every unresolved review rule. |
+| /receipt-gaps | Find orders billed beyond recorded goods receipt values. |
+| /duplicates | Find repeated supplier invoice numbers, ignoring punctuation and case. |
+| /compliance | Check recorded taxable supply evidence and arithmetic; explain the limits in docs/compliance.md. |
+| /handoff-ready | Read invoices reviewed by another person and still clear of exceptions. |
+| /imports | Read imported source labels, hashes and counts. |
+| /show | Read a complete invoice before any action. |
+| /history | Read attributed changes to an invoice. |
+| /insights | Answer ten cross-record questions from current data. |
+| /add-supplier | Register a supplier; verification remains a separate evidence-backed step. |
+| /verify-supplier | Record an identity check from evidence supplied by the operator. |
+| /add-order | Record an approved purchase order and its net value. |
+| /receive | Record the value of goods actually received against one purchase order. |
+| /add | Capture an invoice for review from a document the operator has checked. |
+| /add-line | Record a line net amount before review. Line totals must agree with the header. |
+| /amend | Correct an invoice still in review, with an explanation. Read show first. |
+| /approve | Record an authorised second-person review. Never invent the reviewer or their decision. |
+| /reject | Retain a duplicate or invalid invoice with a documented rejection. |
+| /record-posting | Record an accounting reference supplied by finance after posting in their accounting system. This does not post or pay. |
+| /log | Append a note without rewriting earlier history. |
+| /import | Read docs/replace-rossum.md, confirm source organisation, mapping and owner, then preview the import. Present counts and exceptions before applying the same command without --dry-run. |
+| /export | Export all records and history to a new file. Never overwrite an existing export. |
+| /draft-query | Draft an invoice evidence request from recorded exceptions. Read the document yourself. Nothing sends. |
+| /capture-invoice | Read an invoice with the agent and a human check. |
+| /weekly-review | Monday review from three current reads. |
+| /customise | Change the system through a tested migration. |
+| /new-view | Add a read-only report. |
 
-If an ask fits nothing here, run the CLI directly (`npm run <cli> -- --help`) and then propose a new command for it.
+Keep drafts in drafts/. A receipt is net value received, not payment. Matching is at document-total level, not SKU or quantity-level three-way matching. Do not call an empty exception list legal compliance. Sources are evidence references, not copies of the original invoices. Retain originals securely and use tested database backups.
 
-## Hard rules
+Do not delete records, edit applied migrations or seed a business database. Use /customise for an authorised structural change. Do not bypass review gates with direct SQL. Never store bank credentials. Back up and isolate each organisation before shared deployment.
 
-- Never send email or messages from here. Draft to `drafts/`, a person sends.
-- Never delete records without an explicit yes in this session. Prefer marking closed or archived.
-- Never invent a record. If a name is ambiguous, list the candidates and ask.
-- The database is the source of truth. If the answer is not in it, say so.
-
-## Where things live
-
-- `scripts/` the CLI. `scripts/lib/db.mjs` picks `DATABASE_URL` (Postgres, Supabase) or the embedded database in `.data/`.
-- `supabase/migrations/` the schema, plain SQL. `npm run migrate` applies it.
-- `.claude/commands/` the slash commands. Add one every time the same ask comes twice.
-- `docs/` the thesis and the guide for moving off Rossum.
-
-Built by Enterprise DNA. Installed and run for you as part of Omni: https://enterprisedna.co/omni/instead-of/rossum
+Omni by Enterprise DNA installs and runs the system: https://enterprisedna.co/omni/book?offer=replace-software&utm_campaign=rossum

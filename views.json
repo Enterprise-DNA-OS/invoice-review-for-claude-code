@@ -1,13 +1,31 @@
 [
   {
     "name": "week",
-    "title": "This week",
-    "subtitle": "Invoice Review for Claude Code: what needs attention, rendered by npm run view",
+    "title": "Invoice review week",
     "sections": [
       {
-        "title": "Needs attention",
-        "note": "TODO(author): point this at the industry's attention view (overdue, stuck, quiet).",
-        "sql": "select 'replace me' as item, 'TODO(author)' as why"
+        "title": "Review work",
+        "sql": "select code,supplier,owner,due_on,status,exception_count from review_week order by due_on,code"
+      }
+    ]
+  },
+  {
+    "name": "receipt-gaps",
+    "title": "Purchase and receipt reconciliation",
+    "sections": [
+      {
+        "title": "Order balances in cents",
+        "sql": "select code,supplier,currency,ordered_cents,received_cents,invoiced_cents from order_balance order by code"
+      }
+    ]
+  },
+  {
+    "name": "exceptions",
+    "title": "Invoice evidence gaps",
+    "sections": [
+      {
+        "title": "Resolve before handoff",
+        "sql": "select code,owner,rule,finding from invoice_exceptions order by code,rule"
       }
     ]
   }

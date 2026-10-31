@@ -17,99 +17,120 @@
   </tr>
 </table>
 
-<p align="center">
-  <a href="#what-is-this">What is this</a> &bull;
-  <a href="#why-no-front-end">Why no front end</a> &bull;
-  <a href="#quick-start">Quick start</a> &bull;
-  <a href="#the-commands">Commands</a> &bull;
-  <a href="#instead-of-rossum">Instead of Rossum</a> &bull;
-  <a href="#want-it-installed-and-run-for-you">Installed for you</a> &bull;
-  <a href="#license">License</a>
-</p>
-
-<p align="center">
-  <img src="https://img.shields.io/badge/Node-20+-339933?style=flat-square" alt="Node 20+" />
-  <img src="https://img.shields.io/badge/PostgreSQL-any-336791?style=flat-square" alt="PostgreSQL" />
-  <img src="https://img.shields.io/badge/PGlite-embedded-3ecf8e?style=flat-square" alt="PGlite" />
-  <img src="https://img.shields.io/badge/License-MIT-yellow?style=flat-square" alt="MIT License" />
-</p>
-
----
 
 ## What is this
 
-Invoice Review for Claude Code does the job you pay Rossum for, as a Postgres database and a set of agent commands. There is no web front end. You open the folder in [Claude Code](https://claude.com/claude-code) (or Codex, OpenCode, Cursor: see `AGENTS.md`) and ask for what you want in plain language. It runs the right query, and it can answer questions the Rossum dashboard cannot.
+Invoice Review for Claude Code holds captured supplier invoices, purchase orders, receipt values, exceptions and review history in a database you own. Ask the agent what needs attention, reconcile the evidence and produce a draft accounting handoff. Omni by Enterprise DNA installs, customises and runs it for a setup fee and then a retainer.
 
-<!-- TODO(author): the annual bill. One sentence: what a 10 to 50 person business typically pays Rossum per year, all in, with a source. -->
-
-Want the same thing with a web front end, or built on a different stack? That is a customisation, and it is exactly what Enterprise DNA does: [book a call](https://enterprisedna.co/omni/book/?utm_source=github&utm_medium=readme&utm_campaign=rossum).
-
-<!-- TODO(author): two or three sentences on what this specific product covers and who it is for. -->
-
-## Why no front end
-
-- The front end was only ever there because the database was hard to talk to. That is no longer true.
-- Your data sits in plain Postgres tables you own. Any tool can read them. No export, no lock-in.
-- No seats, no tiers, no add-ons. Read [docs/why-no-front-end.md](docs/why-no-front-end.md) for the honest trade-offs too.
+Rossum's [own pricing](https://rossum.ai/pricing/) starts at $18,000 per year, with currency not stated on the visible page, checked 2026-10-31. This rebuild covers invoice review. Rossum also supplies document extraction, validation screens, document archives and integrations. This free base has a supervised /capture-invoice workflow, not a bundled OCR service or an unattended mailbox. It never posts to accounting, moves money or files tax.
 
 ## Quick start
 
-Sixty seconds, no database install (an embedded Postgres runs inside Node):
-
 ```bash
-git clone https://github.com/Enterprise-DNA-OS/invoice-review-for-claude-code.git
-cd invoice-review-for-claude-code
 npm install
 npm run demo
+node scripts/invoice.mjs attention
+node scripts/invoice.mjs insights
+npm run view
+npm run docs
+npm test
 ```
 
-Then open the folder in Claude Code and type a slash command. <!-- TODO(author): name the first command to try. -->
+Node 20 or newer. PGlite runs locally without a database install. Demo data is fictional. Open this folder in Claude Code, Codex, OpenCode or Cursor and start with /review-queue. AGENTS.md points every runtime at the same command library.
 
-### Use it with your own Postgres or Supabase
-
-Copy `.env.example` to `.env`, set `DATABASE_URL`, then `npm run migrate`. Same commands, shared data, no per-seat fee.
+For your own database, set DATABASE_URL in your environment, run npm run migrate and register your records. The same migration and CLI use standard PostgreSQL. Seed refuses DATABASE_URL and refuses an already-operated demo. Keep a separate database per organisation. Amount flags are decimal currency units; machine and table outputs use explicitly labelled integer cents. Calendar dates stay in YYYY-MM-DD form.
 
 ## The commands
 
-<!-- TODO(author): a table of the slash commands in .claude/commands and what each one does. -->
-
-| Command | What it does |
+| Command | Job |
 |---|---|
-| `/...` | ... |
+| /suppliers | Read supplier identities and verification references. |
+| /orders | Reconcile ordered, received and invoiced amounts without mixing currencies. |
+| /receipts | Read recorded delivery evidence. |
+| /invoices | Read invoice totals, owners and status. |
+| /review-queue | Plan today's invoice review work. |
+| /attention | Read overdue invoices and their evidence gaps. |
+| /exceptions | Read every unresolved review rule. |
+| /receipt-gaps | Find orders billed beyond recorded goods receipt values. |
+| /duplicates | Find repeated supplier invoice numbers, ignoring punctuation and case. |
+| /compliance | Check recorded taxable supply evidence and arithmetic; explain the limits in docs/compliance.md. |
+| /handoff-ready | Read invoices reviewed by another person and still clear of exceptions. |
+| /imports | Read imported source labels, hashes and counts. |
+| /show | Read a complete invoice before any action. |
+| /history | Read attributed changes to an invoice. |
+| /insights | Answer ten cross-record questions from current data. |
+| /add-supplier | Register a supplier; verification remains a separate evidence-backed step. |
+| /verify-supplier | Record an identity check from evidence supplied by the operator. |
+| /add-order | Record an approved purchase order and its net value. |
+| /receive | Record the value of goods actually received against one purchase order. |
+| /add | Capture an invoice for review from a document the operator has checked. |
+| /add-line | Record a line net amount before review. Line totals must agree with the header. |
+| /amend | Correct an invoice still in review, with an explanation. Read show first. |
+| /approve | Record an authorised second-person review. Never invent the reviewer or their decision. |
+| /reject | Retain a duplicate or invalid invoice with a documented rejection. |
+| /record-posting | Record an accounting reference supplied by finance after posting in their accounting system. This does not post or pay. |
+| /log | Append a note without rewriting earlier history. |
+| /import | Read docs/replace-rossum.md, confirm source organisation, mapping and owner, then preview the import. Present counts and exceptions before applying the same command without --dry-run. |
+| /export | Export all records and history to a new file. Never overwrite an existing export. |
+| /draft-query | Draft an invoice evidence request from recorded exceptions. Read the document yourself. Nothing sends. |
+| /capture-invoice | Read an invoice with the agent and a human check. |
+| /weekly-review | Monday review from three current reads. |
+| /customise | Change the system through a tested migration. |
+| /new-view | Add a read-only report. |
+
+Every CLI command supports --json. Codes match without case sensitivity; partial UUIDs, partial codes and supplier names work when unambiguous. Ambiguous references list candidates and exit 1. Every change needs a named actor and records history. Actor names are attribution, not identity verification.
 
 ## Instead of Rossum
 
-<!-- TODO(author): how to bring data across from Rossum; link docs/replace-rossum.md -->
+Bring a UTF-8 CSV export from Rossum through one import command. [The switching guide](docs/replace-rossum.md) explains configurable headings, line grouping, source IDs, missing evidence and safe preview. Original rows are retained, batches are atomic, and imports begin in review. PDFs and extraction models do not transfer through CSV.
 
-## Architecture
-
-```
-invoice-review-for-claude-code/
-  CLAUDE.md                 how the operator wants this run (routing table + house rules)
-  AGENTS.md                 the same, for Codex / OpenCode / Cursor / Gemini CLI
-  .claude/commands/         the slash commands
-  scripts/                  the CLI the commands drive
-  scripts/lib/db.mjs        one adapter: DATABASE_URL (pg) or embedded PGlite
-  supabase/migrations/      plain SQL schema
-  supabase/seed.sql         demo data
-  docs/                     the thesis and the migration guide
+```bash
+node scripts/invoice.mjs import rossum examples/rossum-invoices.csv --source=demo-export --owner=Finance --actor=Operator --jurisdiction=NZ --dry-run
+node scripts/invoice.mjs export --out=invoice-records.json
 ```
 
-## Built for coding agents
+## Controls that do work today
 
-The database, CLI and command recipes work with Claude Code, Codex, OpenCode or Cursor. Ask your coding agent for a new command and have it implement and test the change against the same records.
+Supplier and currency must match the order. Cumulative invoice net values cannot exceed order or recorded receipt values. Repeated supplier invoice numbers, mismatched totals, missing original references and missing review evidence block handoff. Receipt matching is at document-total level, not SKU or quantity-level three-way matching. The second reviewer must differ from the intake actor. Handoff checks run again after review, so a newly arrived duplicate blocks it. Rejected documents remain in history.
 
-## Contributing
+The /compliance checks cover a defined subset of NZ taxable-supply evidence plus local operating controls. Read [the sources and limits](docs/compliance.md). A clear result is not tax approval. Other jurisdictions and foreign-currency supplies need an accountant reference. Credits, tax returns, exchange conversion, bank records and payments are outside this base.
 
-Issues and pull requests are welcome. Keep the shape: plain SQL, a small CLI, a slash command per recurring job, no front end.
+## Ten questions to ask
 
-## Want it installed and run for you?
+The insights command answers all ten from current records. These are included cross-record reports, not a claim that Rossum cannot provide equivalent custom reports.
 
-Enterprise DNA installs Invoice Review for Claude Code for your business, migrates your Rossum data, connects it to the rest of your tools, and runs it for you as part of **Omni**, our managed Command Center. One setup fee, then a monthly retainer.
+1. Which overdue invoices have missing receipt evidence?
+2. Which supplier invoice numbers appear more than once?
+3. Which owners have the most exceptions?
+4. Which orders have more invoices than received goods?
+5. Which invoices exceed the total authorised order?
+6. Which records lack their original invoice reference?
+7. Which NZ taxable supply records need more evidence?
+8. Which invoices disagree with their line amounts?
+9. Which suppliers have the longest overdue invoices?
+10. Which reviewed invoices are still clear for handoff?
 
-- Book a call: [enterprisedna.co/omni/book](https://enterprisedna.co/omni/book/?offer=replace-software&utm_source=github&utm_medium=readme&utm_campaign=rossum)
-- Read more: [enterprisedna.co/omni/instead-of/rossum](https://enterprisedna.co/omni/instead-of/rossum?utm_source=github&utm_medium=readme&utm_campaign=rossum)
+## Documents and views
 
-## License
+npm run docs generates branded invoice review packs and draft accounting handoffs for clear, reviewed records. npm run view generates the week, receipt balances and evidence gaps. /draft-query creates an internal evidence request in drafts/. Nothing sends. Change business name, colours and logo in brand.json. Views and documents are static, read-only HTML snapshots. [Why no front end](docs/why-no-front-end.md) explains where a capture screen is useful.
 
-MIT. Copyright (c) 2026 Enterprise DNA.
+## Your first hour: ten things to ask for
+
+1. Put our name and colours on review packs.
+2. Add our suppliers and their verification references.
+3. Record three purchase orders with their currencies.
+4. Record the goods receipt value and evidence for each.
+5. Preview a small Rossum export and compare totals.
+6. Show duplicated invoice numbers across import sources.
+7. Show what is overdue for each owner.
+8. Capture a new invoice and ask another person to review it.
+9. Produce a draft accounting handoff for the reviewed record.
+10. Add our cost-centre field with /customise and a tested migration.
+
+## Access, records and verification
+
+Use trusted operators with a separate database per organisation. All domain tables have RLS enabled and no public access policies. Protect owner credentials; a database owner can bypass application controls. History rejects ordinary updates and deletes but is not tamper-proof against an administrator. Secure original files separately and test native database backups. JSON export is a portable record copy, not a restore system. CSV protects spreadsheet formula prefixes. HTML escapes record text. No original documents, secrets or real customer data ship in this repository.
+
+npm test uses disposable storage and checks all 29 CLI commands. The manual CI workflow runs Linux and Windows plus PostgreSQL 17. Actual results are in docs/verification.md. No database extensions are required.
+
+MIT. Rossum is its owner's trademark. This project is independent of Rossum.

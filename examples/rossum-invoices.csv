@@ -1,0 +1,3 @@
+Document ID,Invoice number,Invoice Date,PO Number,Due date,Vendor name,Vendor ID,Customer name,Customer ID,Total amount,Total without tax,Total tax,Currency,Description,Document URL,Line number,Item description,Item total
+90001,DEMO-9001,2026-10-01,PO-100,2026-11-15,South Quay Packaging,SOUTH,Harbour Demo Ltd,demo/buyer,115.00,100.00,15.00,NZD,Cartons,demo/archive-90001,1,Small cartons,60.00
+90001,DEMO-9001,2026-10-01,PO-100,2026-11-15,South Quay Packaging,SOUTH,Harbour Demo Ltd,demo/buyer,115.00,100.00,15.00,NZD,Cartons,demo/archive-90001,2,Large cartons,40.00

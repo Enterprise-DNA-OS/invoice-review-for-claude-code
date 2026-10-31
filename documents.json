@@ -1,11 +1,60 @@
 [
   {
-    "name": "example",
-    "title": "TODO(author): the first document this industry must produce",
-    "for_each": "select gen_random_uuid() as id, 'Example' as name",
-    "file": "name",
+    "name": "review-pack",
+    "title": "Invoice review record",
+    "for_each": "select id,code from invoices order by code",
+    "file": "code",
     "sections": [
-      { "title": "Details", "sql": "select 'replace me' as item, $1::text as record_id" }
+      {
+        "title": "Invoice record",
+        "layout": "record",
+        "sql": "select * from invoice_register where id=$1",
+        "columns": [
+          "code",
+          "supplier",
+          "invoice_number",
+          "currency",
+          "net_cents",
+          "tax_cents",
+          "gross_cents",
+          "po_number",
+          "issued_on",
+          "due_on",
+          "owner",
+          "status",
+          "reviewed_by"
+        ]
+      },
+      {
+        "title": "Evidence gaps",
+        "sql": "select rule,finding from invoice_exceptions where id=$1 order by rule"
+      },
+      {
+        "title": "Line detail",
+        "sql": "select line_number,description,net_cents from invoice_lines where invoice_id=$1 order by line_number"
+      },
+      {
+        "title": "Review history",
+        "sql": "select kind,actor,note,created_at from events where entity_id=$1 order by created_at"
+      }
+    ]
+  },
+  {
+    "name": "handoff",
+    "title": "Draft accounting handoff",
+    "for_each": "select id,code from invoices i where status='ready' and not exists(select 1 from invoice_exceptions e where e.id=i.id) order by code",
+    "file": "code",
+    "sections": [
+      {
+        "title": "Reviewed invoice, not a payment instruction",
+        "layout": "record",
+        "sql": "select code,supplier,invoice_number,currency,net_cents,tax_cents,gross_cents,po_number,reviewed_by,source_ref from invoice_register where id=$1"
+      },
+      {
+        "title": "Review evidence",
+        "layout": "record",
+        "sql": "select review_ref,tax_jurisdiction,tax_evidence from invoices where id=$1"
+      }
     ]
   }
 ]
